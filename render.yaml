@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: football-club-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: CORS_ORIGINS
+        value: https://hush0k.github.io,http://localhost:5173
+      - key: DB_HOST
+        fromDatabase: { name: football-club-db, property: host }
+      - key: DB_PORT
+        fromDatabase: { name: football-club-db, property: port }
+      - key: DB_USER
+        fromDatabase: { name: football-club-db, property: user }
+      - key: DB_PASSWORD
+        fromDatabase: { name: football-club-db, property: password }
+      - key: DB_NAME
+        fromDatabase: { name: football-club-db, property: database }
+
+databases:
+  - name: football-club-db
+    plan: free
+    databaseName: football_club
+    user: football_club
