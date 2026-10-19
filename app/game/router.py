@@ -16,6 +16,7 @@ router = APIRouter(prefix="/game", tags=["game"])
 async def reset_game(db: AsyncSession = Depends(get_db)):
     await finance_service.reset_finance(db)
     await season_service.reset_standings(db)
+    await season_service.clear_history(db)
     await objective_service.reset(db)
     await player_service.reset_players(db)
     await stadium_service.reset_upgrades(db)

@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from sqlalchemy import Enum, Index, String
+from sqlalchemy import Enum, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -29,6 +29,23 @@ class LineUp(StrEnum):
     BENCH = "Запасной состав"
     ROTATION = "Игрок ротации"
     STARTER = "Основной состав"
+    ACADEMY = "Воспитанник"  # играет в академии, только ему доступны тренировки
+
+
+class Training(StrEnum):
+    NONE = "Без тренировок"
+    MODERATE = "Умеренная тренировка"
+    NORMAL = "Обычная тренировка"
+    INTENSIVE = "Интенсивная тренировка"
+
+
+# вес тренировки в лимите академии
+TRAINING_WEIGHTS = {
+    Training.NONE: 0,
+    Training.MODERATE: 1,
+    Training.NORMAL: 2,
+    Training.INTENSIVE: 3,
+}
 
 
 def _str_enum(enum_cls: type[StrEnum], name: str) -> Enum:
@@ -61,6 +78,7 @@ class Player(Base):
     salary: Mapped[float]
     price: Mapped[float]
     power: Mapped[int]
+    potential: Mapped[int]  # предел силы: от текущей силы до 99, тренировки выше не поднимают
     img_url: Mapped[str] = mapped_column(String(255))
     position: Mapped[Position] = mapped_column(_str_enum(Position, "position"))
     status: Mapped[PlayerStatus] = mapped_column(_str_enum(PlayerStatus, "player_status"), index=True)
@@ -68,6 +86,16 @@ class Player(Base):
     # только для игроков своей команды
     number: Mapped[int | None]
     line_up: Mapped[LineUp | None] = mapped_column(_str_enum(LineUp, "line_up"))
+
+    # тренировки воспитанников: прогресс копится каждую неделю (матч), раз в 3 недели переходит в силу
+    training: Mapped[Training] = mapped_column(
+        _str_enum(Training, "training"), default=Training.NONE, server_default=Training.NONE.value
+    )
+    training_progress: Mapped[int] = mapped_column(default=0, server_default=text("0"))  # % за текущий цикл
+    training_weeks: Mapped[int] = mapped_column(default=0, server_default=text("0"))  # недель в цикле, 0–2
+    power_growth: Mapped[float] = mapped_column(default=0, server_default=text("0"))  # дробный остаток прироста силы
+    # переведён из академии в основную команду — вернуть обратно нельзя
+    left_academy: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
 
     # только для игроков с рынка — откуда покупаем
     club: Mapped[str | None] = mapped_column(String(100))

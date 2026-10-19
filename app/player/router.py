@@ -7,7 +7,16 @@ from app.core.database import get_db
 from app.finance import service as finance_service
 from app.player import service
 from app.player.models import Player, PlayerStatus
-from app.player.schemas import PlayerCreate, PlayerFilter, PlayerFilterOptions, PlayerRead, PlayerSale, PlayerUpdate
+from app.player.schemas import (
+    AcademyRead,
+    PlayerCreate,
+    PlayerFilter,
+    PlayerFilterOptions,
+    PlayerRead,
+    PlayerSale,
+    PlayerUpdate,
+    TrainingUpdate,
+)
 
 router = APIRouter(prefix="/player", tags=["player"])
 
@@ -51,6 +60,12 @@ async def filter_options(status_: Annotated[PlayerStatus | None, Query(alias="st
     return await service.get_filter_options(db, status_)
 
 
+@router.get("/academy", response_model=AcademyRead)
+async def read_academy(db: AsyncSession = Depends(get_db)):
+    """Воспитанники и занятая нагрузка академии (лимит — сумма весов 8)."""
+    return await service.get_academy(db)
+
+
 @router.get("/{player_id}", response_model=PlayerRead)
 async def read_player(player: Player = Depends(get_player_or_404)):
     return player
@@ -60,6 +75,9 @@ async def read_player(player: Player = Depends(get_player_or_404)):
 async def create_player(data: PlayerCreate, db: AsyncSession = Depends(get_db)):
     if data.status == PlayerStatus.SQUAD and data.number in await service.get_squad_numbers(db):
         raise HTTPException(status.HTTP_409_CONFLICT, "Number is already taken")
+    data.training = service.resolve_training(data.line_up, data.training)
+    if reason := await service.check_training(db, data.line_up, data.training):
+        raise HTTPException(status.HTTP_409_CONFLICT, reason)
     return await service.create_player(db, data)
 
 
@@ -76,7 +94,29 @@ async def update_player(
         and data.number in await service.get_squad_numbers(db)
     ):
         raise HTTPException(status.HTTP_409_CONFLICT, "Number is already taken")
+    if "potential" in data.model_fields_set and data.potential is not None \
+            and data.potential < (data.power if data.power is not None else player.power):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Потенциал не может быть меньше силы")
+    if {"line_up", "training"} & data.model_fields_set:
+        line_up = data.line_up if "line_up" in data.model_fields_set else player.line_up
+        if reason := service.check_academy(player, line_up):
+            raise HTTPException(status.HTTP_409_CONFLICT, reason)
+        data.training = service.resolve_training(line_up, data.training, player.training)
+        if reason := await service.check_training(db, line_up, data.training, player.id):
+            raise HTTPException(status.HTTP_409_CONFLICT, reason)
     return await service.update_player(db, player, data)
+
+
+@router.patch("/{player_id}/training", response_model=PlayerRead)
+async def set_training(
+    data: TrainingUpdate,
+    player: Player = Depends(get_player_or_404),
+    db: AsyncSession = Depends(get_db),
+):
+    """Сменить тренировку воспитаннику; накопленный % цикла сохраняется."""
+    if reason := await service.check_training(db, player.line_up, data.training, player.id):
+        raise HTTPException(status.HTTP_409_CONFLICT, reason)
+    return await service.set_training(db, player, data.training)
 
 
 @router.delete("/{player_id}", status_code=status.HTTP_204_NO_CONTENT)

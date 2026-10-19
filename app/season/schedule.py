@@ -7,10 +7,13 @@
 те же пары с обменом хозяев и гостей. Тур r идёт в неделю r.
 
 ЛЧ — общий этап из 5 туров (у каждого 5 разных соперников, общая таблица),
-затем плей-офф на выбывание: лучшие клубы таблицы, 1-й с последним, 2-й
-с предпоследним и т. д. Туры ЛЧ раскидываются по неделям сезона, поэтому
-в некоторые недели клуб играет два матча — по одному в каждом турнире.
-Пары следующего раунда плей-офф создаются, когда доигран предыдущий.
+затем плей-офф на выбывание: 16 лучших клубов таблицы, 1-й с 16-м, 2-й
+с 15-м и т. д. До финала пара играет два матча (дома и в гостях), дальше
+проходит клуб, забивший больше по сумме двух встреч; финал — один матч.
+Туры ЛЧ раскидываются по неделям сезона, поэтому в некоторые недели клуб
+играет два матча — по одному в каждом турнире. Вся ЛЧ укладывается в сезон:
+общий этап — в первые 2/3, плей-офф (7 туров) — до последней недели Ла Лиги.
+Матчи следующего тура плей-офф создаются, когда доигран предыдущий.
 """
 import random
 from collections.abc import Sequence
@@ -28,7 +31,7 @@ _BYE = object()  # пустое место при нечётном числе к
 
 CHAMPIONS_LEAGUE_SPANISH_SPOTS = 3  # сколько клубов Ла Лиги попадает в ЛЧ
 CHAMPIONS_LEAGUE_LEAGUE_ROUNDS = 5  # матчей у каждого клуба в общем этапе ЛЧ
-CHAMPIONS_LEAGUE_MAX_PLAYOFF = 16  # больше клубов в плей-офф не выходит
+CHAMPIONS_LEAGUE_PLAYOFF = 16  # сколько клубов выходит в плей-офф
 # общий этап ЛЧ идёт в первые 2/3 сезона, остаток — под плей-офф
 LEAGUE_PHASE_SHARE = 2 / 3
 
@@ -90,15 +93,24 @@ def league_phase(participants: Sequence[Participant], rng: random.Random | None 
 
 
 def playoff_size(participants: int) -> int:
-    """Сколько клубов выходит в плей-офф: степень двойки, не больше половины участников."""
+    """Сколько клубов выходит в плей-офф: 16, а если участников меньше — наибольшая степень двойки."""
     size = 2
-    while size * 2 <= min(participants // 2, CHAMPIONS_LEAGUE_MAX_PLAYOFF):
+    while size * 2 <= min(participants, CHAMPIONS_LEAGUE_PLAYOFF):
         size *= 2
     return size
 
 
 def playoff_rounds(participants: int) -> int:
     return playoff_size(participants).bit_length() - 1  # 4 клуба → 2 раунда, 8 → 3, 16 → 4
+
+
+def playoff_match_rounds(teams: int, leg: int | None = 1) -> int:
+    """Сколько туров плей-офф осталось, начиная с матча leg стадии, где играют teams клубов.
+
+    Каждая стадия до финала — два тура (два матча пары), финал — один: 16 клубов → 2+2+2+1 = 7.
+    """
+    rounds = 2 * (teams.bit_length() - 2) + 1
+    return rounds - 1 if leg == 2 else rounds
 
 
 def bracket_order(size: int) -> list[int]:
@@ -111,7 +123,7 @@ def bracket_order(size: int) -> list[int]:
 
 
 def seed_playoff(ranked: Sequence[Participant]) -> list[Pair]:
-    """Первый раунд плей-офф по местам в таблице общего этапа. Хозяин — клуб, занявший место выше."""
+    """Пары первого раунда плей-офф по местам в таблице общего этапа: (клуб выше, клуб ниже)."""
     order = bracket_order(len(ranked))
     return [(ranked[order[i] - 1], ranked[order[i + 1] - 1]) for i in range(0, len(order), 2)]
 
@@ -122,14 +134,45 @@ def next_playoff_pairs(winners: Sequence[Participant]) -> list[Pair]:
 
 
 def next_playoff_week(last_week: int, season_weeks: int, rounds_left: int) -> int:
-    """Неделя следующего раунда плей-офф: оставшиеся раунды равномерно до конца сезона."""
+    """Неделя следующего тура плей-офф: оставшиеся туры равномерно до конца сезона, каждый в свою неделю."""
     return last_week + max(1, (season_weeks - last_week) // rounds_left)
 
 
-def fixture_winner(fixture: SeasonFixture) -> int | None:
-    """Прошедший дальше клуб сыгранного матча плей-офф (None — наш клуб): по голам, при ничьей — по пенальти."""
-    home_won = (fixture.home_goals, fixture.home_penalties or 0) > (fixture.guest_goals, fixture.guest_penalties or 0)
+def league_phase_weeks(season_weeks: int) -> int:
+    """Сколько первых недель сезона отдано общему этапу ЛЧ — так, чтобы после него влез весь плей-офф."""
+    return max(CHAMPIONS_LEAGUE_LEAGUE_ROUNDS, min(
+        int(season_weeks * LEAGUE_PHASE_SHARE), season_weeks - playoff_match_rounds(CHAMPIONS_LEAGUE_PLAYOFF),
+    ))
+
+
+def aggregate(fixture: SeasonFixture, first_leg: SeasonFixture | None = None) -> tuple[int, int]:
+    """Голы (хозяина, гостя) матча, а для ответного — по сумме двух встреч.
+
+    В первом матче пары хозяева и гости были наоборот.
+    """
+    if first_leg is None:
+        return fixture.home_goals, fixture.guest_goals
+    return fixture.home_goals + first_leg.guest_goals, fixture.guest_goals + first_leg.home_goals
+
+
+def fixture_winner(fixture: SeasonFixture, first_leg: SeasonFixture | None = None) -> int | None:
+    """Прошедший дальше клуб сыгранной пары плей-офф (None — наш клуб).
+
+    fixture — финал, одиночный матч или ответный матч пары (тогда first_leg — первый).
+    По голам (сумме двух встреч), при равенстве — по пенальти после последнего матча.
+    """
+    home_goals, guest_goals = aggregate(fixture, first_leg)
+    home_won = (home_goals, fixture.home_penalties or 0) > (guest_goals, fixture.guest_penalties or 0)
     return fixture.home_team_id if home_won else fixture.guest_team_id
+
+
+def first_legs(fixtures: Sequence[SeasonFixture]) -> dict[int, SeasonFixture]:
+    """id ответного матча → первый матч той же пары (хозяин и гость поменяны местами)."""
+    by_pair = {(f.stage, f.home_team_id, f.guest_team_id): f for f in fixtures if f.leg == 1}
+    return {
+        f.id: by_pair[(f.stage, f.guest_team_id, f.home_team_id)]
+        for f in fixtures if f.leg == 2 and (f.stage, f.guest_team_id, f.home_team_id) in by_pair
+    }
 
 
 # --- хранение в БД ---
@@ -177,7 +220,7 @@ async def generate_schedule(db: AsyncSession, rng: random.Random | None = None) 
 
     # туры общего этапа ЛЧ; недели плей-офф назначаются, когда он будет доигран
     champions = league_phase(await get_champions_league_participants(db), rng)
-    weeks = spread_weeks(len(champions), int(len(laliga) * LEAGUE_PHASE_SHARE), rng)
+    weeks = spread_weeks(len(champions), league_phase_weeks(len(laliga)), rng)
     for number, (week, pairs) in enumerate(zip(weeks, champions), start=1):
         for home, guest in pairs:
             db.add(SeasonFixture(
@@ -188,12 +231,12 @@ async def generate_schedule(db: AsyncSession, rng: random.Random | None = None) 
 
 
 async def add_playoff_round(
-    db: AsyncSession, pairs: Sequence[Pair], stage: Stage, round_: int, week: int,
+    db: AsyncSession, pairs: Sequence[Pair], stage: Stage, round_: int, week: int, leg: int | None = None,
 ) -> None:
     for home, guest in pairs:
         db.add(SeasonFixture(
             competition=Competition.CHAMPIONS_LEAGUE, stage=stage, round=round_, week=week,
-            home_team_id=home, guest_team_id=guest,
+            home_team_id=home, guest_team_id=guest, leg=leg,
         ))
     await db.flush()
 

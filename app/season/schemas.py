@@ -3,6 +3,8 @@ from datetime import date as date_
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.game_engine.schemas import MatchResult, Side
+from app.objective.schemas import ObjectiveRead
+from app.player.schemas import TrainingResult
 from app.season.models import Competition, Stage, TaskType
 from app.team.schemas import TeamRead
 
@@ -59,6 +61,8 @@ class CompetitionRoundResult(BaseModel):
     competition: Competition
     stage: Stage
     round: int
+    # матч пары плей-офф: 1 — первый, 2 — ответный; None — общий этап или финал
+    leg: int | None = None
     # None — наш клуб не играет в этом туре (нечётное число команд, не участвуем в ЛЧ или вылетели)
     match: MatchResult | None
     # серия пенальти нашего матча плей-офф, если основное время закончилось вничью
@@ -72,6 +76,7 @@ class RoundResult(BaseModel):
 
     week: int
     results: list[CompetitionRoundResult]
+    academy: list[TrainingResult] = []  # неделя тренировок воспитанников
 
 
 class ScheduledMatch(BaseModel):
@@ -83,8 +88,11 @@ class ScheduledMatch(BaseModel):
     guest_goals: int | None
     home_penalties: int | None
     guest_penalties: int | None
+    # голы по сумме двух встреч — у сыгранного ответного матча пары, иначе None
+    home_aggregate: int | None = None
+    guest_aggregate: int | None = None
     played: bool
-    # прошедший дальше клуб матча плей-офф (после игры); в общем этапе — None
+    # прошедший дальше клуб пары плей-офф (после ответного матча или финала); в общем этапе — None
     winner: str | None = None
 
 
@@ -93,6 +101,8 @@ class ScheduleRound(BaseModel):
     stage: Stage
     round: int
     week: int
+    # матч пары плей-офф: 1 — первый, 2 — ответный; None — общий этап или финал
+    leg: int | None = None
     matches: list[ScheduledMatch]
 
 
@@ -109,8 +119,17 @@ class NextMatch(BaseModel):
     stage: Stage
     round: int
     week: int
+    leg: int | None = None
     enemy: TeamRead
     side: Side
+
+
+class NextWeek(BaseModel):
+    """Ближайшая неделя: в ней может быть матч Ла Лиги и матч ЛЧ."""
+
+    week: int
+    # наши матчи недели, Ла Лига первой; пусто — у нас в эту неделю матча нет
+    matches: list[NextMatch]
 
 
 class SeasonTaskBase(BaseModel):
@@ -141,3 +160,39 @@ class SeasonTaskRead(SeasonTaskBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+
+
+class SeasonHistoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    season: int
+    status: str
+    laliga_position: int
+    laliga_total: int
+    laliga_points: int
+    laliga_wins: int
+    laliga_draws: int
+    laliga_losses: int
+    champions_league_position: int | None
+    champions_league_total: int | None
+    champions_league_points: int | None
+    champions_league_wins: int | None
+    champions_league_draws: int | None
+    champions_league_losses: int | None
+    playoff_stage: Stage | None
+    champions_league_champion: bool
+    laliga_earnings: float
+    champions_league_earnings: float
+    title_bonuses: float
+    objectives_earnings: float
+    budget: float
+    fans: float
+    reputation: int
+    objectives: list[ObjectiveRead] = []
+
+    @computed_field
+    @property
+    def total_earnings(self) -> float:
+        return round(
+            self.laliga_earnings + self.champions_league_earnings + self.title_bonuses + self.objectives_earnings, 1
+        )

@@ -1,43 +1,60 @@
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.player.models import LineUp, PlayerStatus, Position
+from app.player.models import LineUp, PlayerStatus, Position, Training
 
 
 class PlayerBase(BaseModel):
     name: str = Field(max_length=100)
     last_name: str = Field(max_length=100)
     nation: str = Field(max_length=100)
-    age: int = Field(ge=14, le=60)
+    age: int = Field(ge=9, le=60)  # воспитанникам академии от 9 лет
     salary: float = Field(ge=0)
     price: float = Field(ge=0)
     power: int = Field(ge=0, le=100)
+    potential: int = Field(ge=0, le=100)
     img_url: str = Field(max_length=255)
     position: Position
     status: PlayerStatus
     number: int | None = Field(default=None, ge=1, le=99)
     line_up: LineUp | None = None
+    training: Training | None = None  # не задана — умеренная для воспитанника, иначе без тренировок
     club: str | None = Field(default=None, max_length=100)
     league: str | None = Field(default=None, max_length=100)
 
 
 class PlayerCreate(PlayerBase):
-    pass
+    # воспитаннику возраст (9–14) и сила (45–63) выпадают случайно — переданные значения игнорируются
+    age: int | None = Field(default=None, ge=9, le=60)
+    power: int | None = Field(default=None, ge=0, le=100)
+    # не задан — выпадает случайно (чаще всего 80–87, 95+ примерно у 5%); воспитаннику всегда случайный
+    potential: int | None = Field(default=None, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _check_power(self):
+        if self.line_up != LineUp.ACADEMY:
+            if self.age is None or self.power is None:
+                raise ValueError("age и power обязательны для всех, кроме воспитанников")
+            if self.potential is not None and self.potential < self.power:
+                raise ValueError("potential не может быть меньше power")
+        return self
 
 
 class PlayerUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     nation: str | None = Field(default=None, max_length=100)
-    age: int | None = Field(default=None, ge=14, le=60)
+    age: int | None = Field(default=None, ge=9, le=60)
     salary: float | None = Field(default=None, ge=0)
     price: float | None = Field(default=None, ge=0)
     power: int | None = Field(default=None, ge=0, le=100)
+    potential: int | None = Field(default=None, ge=0, le=100)
     img_url: str | None = Field(default=None, max_length=255)
     position: Position | None = None
     number: int | None = Field(default=None, ge=1, le=99)
     line_up: LineUp | None = None
+    training: Training | None = None
     club: str | None = Field(default=None, max_length=100)
     league: str | None = Field(default=None, max_length=100)
 
@@ -46,6 +63,38 @@ class PlayerRead(PlayerBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    training: Training
+    training_progress: int  # % накоплено в текущем цикле из 3 недель
+    training_weeks: int  # сколько недель цикла уже прошло
+    left_academy: bool  # уже переведён из академии — вернуть туда нельзя
+
+
+# --- академия ---
+
+
+class TrainingUpdate(BaseModel):
+    training: Training
+
+
+class AcademyRead(BaseModel):
+    """Воспитанники и сколько веса тренировок занято (умеренная 1, обычная 2, интенсивная 3)."""
+
+    weight_used: int
+    weight_limit: int
+    players: list[PlayerRead]
+
+
+class TrainingResult(BaseModel):
+    """Итог недели тренировок для одного воспитанника."""
+
+    player_id: int
+    training: Training
+    week_progress: int  # % выпало на этой неделе
+    training_progress: int  # % накоплено в цикле (после 3-й недели — 0)
+    training_weeks: int
+    power_gain: float  # 0 до конца цикла, на 3-й неделе — 1 × накопленный %
+    power: int
+    price: float  # растёт, когда сила проходит порог 70/75/80/85
 
 
 class PlayerSale(BaseModel):

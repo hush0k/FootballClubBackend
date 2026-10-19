@@ -64,8 +64,9 @@ def calc_fan_penalty(fans: float) -> float:
     return steps * FANS_PENALTY
 
 
-def get_season_status(played: int, season_rounds: int, losses: int) -> SeasonStatus:
-    if played < season_rounds:
+def get_season_status(played: int, season_rounds: int, losses: int, unplayed: bool = False) -> SeasonStatus:
+    """unplayed — в расписании остались матчи (например, плей-офф ЛЧ после конца Ла Лиги)."""
+    if played < season_rounds or unplayed:
         return SeasonStatus.IN_PROGRESS
     if losses > LOSE_LOSSES:
         return SeasonStatus.LOSE
@@ -86,6 +87,7 @@ async def get_summary(db: AsyncSession) -> FinanceSummary:
     # длина сезона = число наших матчей Ла Лиги в расписании (14 клубов → 26), матчи ЛЧ не считаются
     await schedule.ensure_schedule(db)
     season_rounds = await schedule.count_own_fixtures(db)
+    unplayed = await schedule.get_current_week(db) is not None
 
     return FinanceSummary(
         **FinanceRead.model_validate(finance).model_dump(),
@@ -107,7 +109,7 @@ async def get_summary(db: AsyncSession) -> FinanceSummary:
         effective_transfer_left=max(0, round1(finance.transfer_budget_left - penalty)),
         matches_played=played,
         season_rounds=season_rounds,
-        season_status=get_season_status(played, season_rounds, losses),
+        season_status=get_season_status(played, season_rounds, losses, unplayed),
     )
 
 

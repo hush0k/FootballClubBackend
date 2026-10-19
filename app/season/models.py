@@ -66,7 +66,10 @@ class SeasonFixture(Base):
     """Матч из расписания текущего сезона. team_id = None — наш клуб.
 
     round — тур внутри турнира, week — неделя сезона. В одну неделю могут
-    пройти тур Ла Лиги и тур ЛЧ. В плей-офф ничьей быть не может —
+    пройти тур Ла Лиги и тур ЛЧ. Пары плей-офф ЛЧ до финала играют два матча
+    (leg 1 и 2, каждый — свой тур и своя неделя), проходит дальше клуб,
+    забивший больше по сумме двух встреч. Финал — один матч (leg = None).
+    Ничьей по сумме быть не может — после ответного матча (или финала)
     победитель определяется серией пенальти (home_penalties / guest_penalties).
     """
 
@@ -88,6 +91,8 @@ class SeasonFixture(Base):
     )
     home_penalties: Mapped[int | None]
     guest_penalties: Mapped[int | None]
+    # номер матча в паре плей-офф: 1 — первый, 2 — ответный; None — общий этап или финал
+    leg: Mapped[int | None]
 
 
 class TaskType(StrEnum):
@@ -112,3 +117,40 @@ class SeasonTask(Base):
     # выбрана ли задача на текущий сезон (логику выбора добавим позже)
     is_active: Mapped[bool] = mapped_column(default=False)
     is_completed: Mapped[bool] = mapped_column(default=False)
+
+
+class SeasonHistory(Base):
+    """Итоги завершённого сезона — пишутся один раз в finish_season."""
+
+    __tablename__ = "season_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    season: Mapped[int] = mapped_column(unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16))  # win / lose / finished
+
+    laliga_position: Mapped[int]
+    laliga_total: Mapped[int]
+    laliga_points: Mapped[int]
+    laliga_wins: Mapped[int]
+    laliga_draws: Mapped[int]
+    laliga_losses: Mapped[int]
+
+    # None — клуб не играл в ЛЧ в этом сезоне
+    champions_league_position: Mapped[int | None]
+    champions_league_total: Mapped[int | None]
+    champions_league_points: Mapped[int | None]
+    champions_league_wins: Mapped[int | None]
+    champions_league_draws: Mapped[int | None]
+    champions_league_losses: Mapped[int | None]
+    playoff_stage: Mapped[str | None] = mapped_column(String(32))  # последняя сыгранная стадия плей-офф
+    champions_league_champion: Mapped[bool] = mapped_column(default=False)
+
+    # млн: призовые за матчи, бонусы за титулы, награды минус штрафы за цели
+    laliga_earnings: Mapped[float] = mapped_column(default=0)
+    champions_league_earnings: Mapped[float] = mapped_column(default=0)
+    title_bonuses: Mapped[float] = mapped_column(default=0)
+    objectives_earnings: Mapped[float] = mapped_column(default=0)
+
+    budget: Mapped[float]  # свободный бюджет на конец сезона
+    fans: Mapped[float]
+    reputation: Mapped[int]

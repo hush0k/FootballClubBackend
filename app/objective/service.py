@@ -2,8 +2,8 @@
 
 Ла Лига, ЛЧ и Эль Класико — лестницы уровней: выполнил цель — в следующем
 сезоне уровень выше (цель сложнее, награда больше), провалил — штраф и
-уровень ниже. Цель ЛЧ появляется, когда лестница Ла Лиги дошла до топ-3 и
-клуб играет в ЛЧ. «Омолодить состав» — когда средний возраст состава больше
+уровень ниже. Цель ЛЧ появляется в каждом сезоне, где клуб играет в ЛЧ.
+«Омолодить состав» — когда средний возраст состава больше
 30 лет, «купить звёздного игрока» — в случайный сезон, но не реже раза в 6 сезонов.
 
 Награды и штрафы начисляются в бюджет в конце сезона (evaluate_season).
@@ -34,7 +34,6 @@ LALIGA_LADDER = {
     3: (3, 35, 30, "Войти в топ-3 Ла Лиги"),
     4: (1, 50, 30, "Стать чемпионом Ла Лиги"),
 }
-LALIGA_LEVEL_FOR_CHAMPIONS_LEAGUE = 3  # с этого уровня Ла Лиги появляется цель ЛЧ
 
 # progress цели ЛЧ — глубина стадии, до которой дошёл клуб
 STAGE_DEPTH = {Stage.LEAGUE: 0, Stage.ROUND_OF_16: 1, Stage.QUARTER_FINAL: 2, Stage.SEMI_FINAL: 3, Stage.FINAL: 4}
@@ -177,13 +176,8 @@ async def ensure_objectives(db: AsyncSession, rng: random.Random = random) -> li
             season, ObjectiveType.LALIGA_PLACE, state.laliga_level, LALIGA_LADDER[state.laliga_level],
         ))
 
-        if state.laliga_level >= LALIGA_LEVEL_FOR_CHAMPIONS_LEAGUE:
-            await schedule.ensure_schedule(db)
-            if None in await schedule.get_fixture_participants(db, Competition.CHAMPIONS_LEAGUE):
-                level = state.champions_league_level
-                objectives.append(_objective(
-                    season, ObjectiveType.CHAMPIONS_LEAGUE, level, CHAMPIONS_LEAGUE_LADDER[level],
-                ))
+        if await _plays_champions_league(db):
+            objectives.append(_champions_league_objective(state))
 
         if await _rival_id(db) is not None:
             objectives.append(_objective(
@@ -199,8 +193,28 @@ async def ensure_objectives(db: AsyncSession, rng: random.Random = random) -> li
 
         db.add_all(objectives)
         await db.flush()
+    elif (
+        not state.finished
+        and all(o.type != ObjectiveType.CHAMPIONS_LEAGUE for o in objectives)
+        and await _plays_champions_league(db)
+    ):
+        # цели сезона созданы раньше, когда цель ЛЧ ещё требовала топ-3 лестницы Ла Лиги
+        objective = _champions_league_objective(state)
+        db.add(objective)
+        await db.flush()
+        objectives.append(objective)
     await refresh_progress(db, objectives)
     return objectives
+
+
+async def _plays_champions_league(db: AsyncSession) -> bool:
+    await schedule.ensure_schedule(db)
+    return None in await schedule.get_fixture_participants(db, Competition.CHAMPIONS_LEAGUE)
+
+
+def _champions_league_objective(state: ObjectiveState) -> ClubObjective:
+    level = state.champions_league_level
+    return _objective(state.season, ObjectiveType.CHAMPIONS_LEAGUE, level, CHAMPIONS_LEAGUE_LADDER[level])
 
 
 async def evaluate_season(db: AsyncSession) -> list[ClubObjective]:

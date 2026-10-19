@@ -1,10 +1,13 @@
+import random
+
 from sqlalchemy import Select, case, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance import service as finance_service
 from app.objective import service as objective_service
-from app.player.models import LineUp, Player, PlayerStatus, Position
+from app.player.models import TRAINING_WEIGHTS, LineUp, Player, PlayerStatus, Position, Training
 from app.player.schemas import (
+    AcademyRead,
     FilterOption,
     PlayerCreate,
     PlayerFilter,
@@ -15,6 +18,7 @@ from app.player.schemas import (
     PlayerUpdate,
     PositionGroup,
     Range,
+    TrainingResult,
 )
 from app.player.seed import PLAYERS
 
@@ -22,7 +26,7 @@ from app.player.seed import PLAYERS
 LINE_UP_ORDER = [LineUp.DEPTH, LineUp.BENCH, LineUp.ROTATION, LineUp.STARTER]
 
 # сортировка состава по умолчанию, как во фронте: статус → позиция → сила
-LINE_UP_PRIORITY = [LineUp.STARTER, LineUp.ROTATION, LineUp.BENCH, LineUp.DEPTH]
+LINE_UP_PRIORITY = [LineUp.STARTER, LineUp.ROTATION, LineUp.BENCH, LineUp.DEPTH, LineUp.ACADEMY]
 POSITION_PRIORITY = list(Position)  # ВР, ПЗ, ЦЗ, ЛЗ, ОП, ЦП, АП, ПВ, ЛВ, ФР
 
 POSITION_GROUPS = {
@@ -50,6 +54,59 @@ SORT_COLUMNS = {
     PlayerSort.NUMBER: (Player.number, False),
     PlayerSort.NAME: (Player.last_name, False),
 }
+
+
+# академия: сумма весов тренировок всех воспитанников не больше 8
+ACADEMY_WEIGHT_LIMIT = 8
+# сколько % прогресса максимум даёт неделя тренировки (выпадает от 0 до этого числа)
+TRAINING_MAX_GAIN = {Training.MODERATE: 10, Training.NORMAL: 20, Training.INTENSIVE: 33}
+TRAINING_CYCLE = 3  # раз в 3 недели (матча) прогресс превращается в силу
+MAX_POWER_GAIN = 1  # при 100% за цикл игрок получает +1 к силе
+
+# пороги силы, на которых растёт цена: множитель и минимальная цена (млн €) после порога
+PRICE_THRESHOLDS = {70: (1.5, 5), 75: (1.5, 10), 80: (2, 20), 85: (2, 40)}
+
+# новый воспитанник: возраст и стартовая сила выпадают случайно
+ACADEMY_AGE = (9, 14)
+ACADEMY_POWER = (45, 63)
+
+# потенциал ~ нормальное распределение: 80–87 чаще всего (~40%), 95–99 примерно у 5%
+POTENTIAL_MEAN = 83.5
+POTENTIAL_SD = 7
+MAX_POTENTIAL = 99
+
+
+def generate_potential(power: int, rng: random.Random = random) -> int:
+    """Случайный потенциал не ниже текущей силы и не выше 99 (у кого сила уже выше — равен силе)."""
+    if power >= MAX_POTENTIAL:
+        return power
+    for _ in range(100):
+        potential = round(rng.gauss(POTENTIAL_MEAN, POTENTIAL_SD))
+        if power <= potential <= MAX_POTENTIAL:
+            return potential
+    return rng.randint(power, MAX_POTENTIAL)  # сила далеко в хвосте распределения
+
+
+def apply_price_growth(player: Player, old_power: int) -> None:
+    """Поднимает цену за каждый пройденный порог силы из (old_power, power]."""
+    for threshold, (multiplier, min_price) in PRICE_THRESHOLDS.items():
+        if old_power < threshold <= player.power:
+            player.price = round(max(player.price * multiplier, min_price), 1)
+
+
+def check_academy(player: Player | None, line_up: LineUp | None) -> str | None:
+    """Причина, по которой игрока нельзя перевести в академию, или None."""
+    if line_up != LineUp.ACADEMY or player is None or player.line_up == LineUp.ACADEMY:
+        return None
+    if player.left_academy:
+        return "Игрок уже переведён из академии, вернуть его обратно нельзя"
+    return None
+
+
+def _leave_academy(player: Player) -> None:
+    player.left_academy = True
+    _reset_training(player)
+
 
 
 def _priority(column, values: list) -> case:
@@ -200,8 +257,123 @@ async def get_squad_numbers(db: AsyncSession) -> set[int]:
     return set(result)
 
 
-async def create_player(db: AsyncSession, data: PlayerCreate) -> Player:
+def resolve_training(line_up: LineUp | None, training: Training | None,
+                     current: Training = Training.NONE) -> Training:
+    """Какая тренировка будет у игрока, если её не указали явно.
+
+    Воспитанник сохраняет текущую (новый — умеренную), у остальных всегда «без тренировок».
+    """
+    if training is not None:
+        return training
+    if line_up != LineUp.ACADEMY:
+        return Training.NONE
+    return current if current != Training.NONE else Training.MODERATE
+
+
+def _training_weight() -> case:
+    return case(TRAINING_WEIGHTS, value=Player.training, else_=0)
+
+
+async def get_academy_weight(db: AsyncSession, exclude_id: int | None = None) -> int:
+    query = select(func.coalesce(func.sum(_training_weight()), 0)).where(Player.line_up == LineUp.ACADEMY)
+    if exclude_id is not None:
+        query = query.where(Player.id != exclude_id)
+    return await db.scalar(query)
+
+
+async def check_training(db: AsyncSession, line_up: LineUp | None, training: Training,
+                         player_id: int | None = None) -> str | None:
+    """Причина, по которой такую тренировку поставить нельзя, или None."""
+    if line_up != LineUp.ACADEMY:
+        if training != Training.NONE:
+            return "Тренировки доступны только воспитанникам академии"
+        return None
+    if training == Training.NONE:
+        return "У воспитанника должна быть минимум умеренная тренировка"
+    used = await get_academy_weight(db, exclude_id=player_id)
+    if used + TRAINING_WEIGHTS[training] > ACADEMY_WEIGHT_LIMIT:
+        return (f"Превышен лимит нагрузки академии: {used} + {TRAINING_WEIGHTS[training]} "
+                f"> {ACADEMY_WEIGHT_LIMIT}")
+    return None
+
+
+def _reset_training(player: Player) -> None:
+    player.training = Training.NONE
+    player.training_progress = 0
+    player.training_weeks = 0
+
+
+async def get_academy(db: AsyncSession) -> AcademyRead:
+    players = list(await db.scalars(
+        select(Player).where(Player.line_up == LineUp.ACADEMY).order_by(Player.power.desc(), Player.id)
+    ))
+    return AcademyRead(
+        weight_used=sum(TRAINING_WEIGHTS[p.training] for p in players),
+        weight_limit=ACADEMY_WEIGHT_LIMIT,
+        players=players,
+    )
+
+
+async def set_training(db: AsyncSession, player: Player, training: Training) -> Player:
+    player.training = training
+    await db.commit()
+    await db.refresh(player)
+    return player
+
+
+async def train_academy_week(db: AsyncSession, rng: random.Random = random) -> list[TrainingResult]:
+    """Одна неделя (матч) тренировок академии. Не коммитит — это делает вызывающий.
+
+    Каждую неделю к прогрессу добавляется случайный % по уровню тренировки,
+    на 3-й неделе игрок получает MAX_POWER_GAIN × прогресс/100 силы и цикл начинается заново.
+    Дробная часть прироста копится в power_growth, пока не наберётся целое очко.
+    Игроков без тренировок не выбираем вовсе.
+    """
+    players = list(await db.scalars(
+        select(Player)
+        .where(Player.line_up == LineUp.ACADEMY, Player.training != Training.NONE)
+        .order_by(Player.id)
+    ))
+    results = []
+    for player in players:
+        week_progress = rng.randint(0, TRAINING_MAX_GAIN[player.training])
+        player.training_progress = min(100, player.training_progress + week_progress)
+        player.training_weeks += 1
+
+        power_gain = 0.0
+        if player.training_weeks >= TRAINING_CYCLE:
+            power_gain = MAX_POWER_GAIN * player.training_progress / 100
+            growth = round(player.power_growth + power_gain, 4)
+            whole = int(growth)
+            cap = max(player.potential, player.power)  # выше потенциала тренировки не поднимают
+            old_power = player.power
+            player.power = min(cap, player.power + whole)
+            apply_price_growth(player, old_power)
+            player.power_growth = 0 if player.power == cap else growth - whole
+            player.training_progress = 0
+            player.training_weeks = 0
+
+        results.append(TrainingResult(
+            player_id=player.id,
+            training=player.training,
+            week_progress=week_progress,
+            training_progress=player.training_progress,
+            training_weeks=player.training_weeks,
+            power_gain=power_gain,
+            power=player.power,
+            price=player.price,
+        ))
+    return results
+
+
+async def create_player(db: AsyncSession, data: PlayerCreate, rng: random.Random = random) -> Player:
     player = Player(**data.model_dump())
+    if player.line_up == LineUp.ACADEMY:
+        player.age = rng.randint(*ACADEMY_AGE)
+        player.power = rng.randint(*ACADEMY_POWER)
+        player.potential = generate_potential(player.power, rng)
+    elif player.potential is None:
+        player.potential = generate_potential(player.power, rng)
     db.add(player)
     await db.commit()
     await db.refresh(player)
@@ -209,8 +381,18 @@ async def create_player(db: AsyncSession, data: PlayerCreate) -> Player:
 
 
 async def update_player(db: AsyncSession, player: Player, data: PlayerUpdate) -> Player:
+    was_academy = player.line_up == LineUp.ACADEMY
+    old_power = player.power
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(player, field, value)
+    if "price" not in data.model_fields_set:
+        apply_price_growth(player, old_power)  # цену, заданную вручную, не трогаем
+    player.potential = max(player.potential, player.power)  # сила выросла выше потенциала — тянем его следом
+    if player.line_up != LineUp.ACADEMY:
+        if was_academy:
+            _leave_academy(player)
+        else:
+            _reset_training(player)  # тренировки только у воспитанников
     await db.commit()
     await db.refresh(player)
     return player
@@ -222,8 +404,17 @@ async def delete_player(db: AsyncSession, player: Player) -> None:
 
 
 async def promote_player(db: AsyncSession, player: Player) -> Player:
-    next_index = (LINE_UP_ORDER.index(player.line_up) + 1) % len(LINE_UP_ORDER)
-    player.line_up = LINE_UP_ORDER[next_index]
+    was_academy = player.line_up == LineUp.ACADEMY
+    if player.line_up in LINE_UP_ORDER:
+        next_index = (LINE_UP_ORDER.index(player.line_up) + 1) % len(LINE_UP_ORDER)
+        player.line_up = LINE_UP_ORDER[next_index]
+    else:
+        # воспитанник (или без статуса) переводится в основную команду с самого низа
+        player.line_up = LINE_UP_ORDER[0]
+        if was_academy:
+            _leave_academy(player)  # тренировки и прогресс сгорают, обратно в академию нельзя
+        else:
+            _reset_training(player)
     await db.commit()
     await db.refresh(player)
     return player
@@ -255,7 +446,7 @@ async def sell_player(db: AsyncSession, player: Player) -> PlayerSale:
 
 async def reset_players(db: AsyncSession) -> list[Player]:
     await db.execute(delete(Player))
-    await db.execute(insert(Player), PLAYERS)
+    await db.execute(insert(Player), [{**p, "potential": generate_potential(p["power"])} for p in PLAYERS])
     await db.commit()
     result = await db.scalars(select(Player).order_by(Player.id))
     return list(result)
