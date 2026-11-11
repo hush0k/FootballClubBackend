@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth.dependencies import get_current_user
+from app.auth.router import router as auth_router
 from app.coach.router import router as coach_router
 from app.core.config import settings
 from app.core.database import engine
@@ -46,7 +48,11 @@ for r in (
     objective_router,
     game_router,
 ):
-    app.include_router(r)
+    # Все игровые эндпоинты доступны только авторизованным пользователям
+    app.include_router(r, dependencies=[Depends(get_current_user)])
+
+# /auth/register и /auth/login публичные, /auth/me защищён внутри роутера
+app.include_router(auth_router)
 
 
 @app.get("/health")

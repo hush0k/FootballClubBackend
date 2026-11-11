@@ -7,3 +7,4 @@ from app.stadium.models import StadiumUpgrade  # noqa: F401
 from app.season.models import SeasonFixture, SeasonTask, Standing  # noqa: F401
 from app.finance.models import ClubFinance  # noqa: F401
 from app.objective.models import ClubObjective, ObjectiveState  # noqa: F401
+from app.auth.models import User  # noqa: F401
