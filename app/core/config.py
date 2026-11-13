@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24
 
+    GOOGLE_CLIENT_ID: str = ""
+
     @property
     def DATABASE_URL(self) -> str:
         return (
