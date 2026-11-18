@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user_or_public
 from app.auth.router import router as auth_router
 from app.coach.router import router as coach_router
 from app.core.config import settings
@@ -31,6 +31,7 @@ app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$" if settings.DEBUG else None,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -48,8 +49,8 @@ for r in (
     objective_router,
     game_router,
 ):
-    # Все игровые эндпоинты доступны только авторизованным пользователям
-    app.include_router(r, dependencies=[Depends(get_current_user)])
+    # Игровые эндпоинты требуют токен, кроме белого списка публичных GET (см. auth/dependencies.py)
+    app.include_router(r, dependencies=[Depends(get_current_user_or_public)])
 
 # /auth/register и /auth/login публичные, /auth/me защищён внутри роутера
 app.include_router(auth_router)
