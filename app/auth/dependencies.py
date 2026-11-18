@@ -1,6 +1,6 @@
 import re
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,9 +32,6 @@ async def get_current_user(
     return user
 
 
-# Публичные (без токена) только безопасные GET-запросы на общие данные игры:
-# турнирные таблицы, плей-офф, список клубов и трансферный рынок.
-# Всё, чего нет в этом списке, по-прежнему требует токен.
 PUBLIC_GET_PATHS = {
     "/team",
     "/season/standings",
@@ -42,6 +39,7 @@ PUBLIC_GET_PATHS = {
     "/league-of-champions/standings",
     "/league-of-champions/playoff",
 }
+PUBLIC_CACHE_CONTROL = "public, no-cache"
 _PLAYER_ID_PATH = re.compile(r"^/player/(\d+)$")
 
 
@@ -51,7 +49,6 @@ async def is_public_request(request: Request, db: AsyncSession) -> bool:
     path = request.url.path.rstrip("/") or "/"
     if path in PUBLIC_GET_PATHS:
         return True
-    # Игроки: публично только маркет, состав клуба остаётся закрытым
     if path in ("/player", "/player/filters"):
         return request.query_params.get("status") == PlayerStatus.MARKET.value
     match = _PLAYER_ID_PATH.match(path)
@@ -63,10 +60,11 @@ async def is_public_request(request: Request, db: AsyncSession) -> bool:
 
 async def get_current_user_or_public(
     request: Request,
+    response: Response,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User | None:
-    """Пускает без токена только запросы из белого списка, остальным нужен токен."""
     if await is_public_request(request, db):
+        response.headers["Cache-Control"] = PUBLIC_CACHE_CONTROL
         return None
     return await get_current_user(credentials, db)

@@ -49,7 +49,6 @@ for r in (
     objective_router,
     game_router,
 ):
-    # Игровые эндпоинты требуют токен, кроме белого списка публичных GET (см. auth/dependencies.py)
     app.include_router(r, dependencies=[Depends(get_current_user_or_public)])
 
 # /auth/register и /auth/login публичные, /auth/me защищён внутри роутера
