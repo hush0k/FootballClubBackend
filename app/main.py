@@ -34,6 +34,7 @@ app.add_middleware(
     allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$" if settings.DEBUG else None,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count"],
 )
 
 for r in (
