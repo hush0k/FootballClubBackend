@@ -31,16 +31,19 @@ class Score:
     result: MatchOutcome
 
 
-def get_win_chance(power_a: float, power_b: float, spread: float = 10) -> float:
-    # Эло-подобная формула: +10 силы ≈ шанс 10:1
+def get_win_chance(power_a: float, power_b: float, spread: float = 28) -> float:
     return 1 / (1 + 10 ** ((power_b - power_a) / spread))
 
 
-def get_chances(power: float, enemy_power: float, max_draw_chance: float = 0.25) -> Chances:
+def get_chances(
+        power: float,
+        enemy_power: float,
+        min_draw_chance: float = 0.14,
+        max_draw_chance: float = 0.38,
+) -> Chances:
     pure = get_win_chance(power, enemy_power)
-    # чем ближе команды по силе, тем выше шанс ничьей
     closeness = 1 - abs(pure - 0.5) * 2
-    draw = max_draw_chance * closeness
+    draw = min_draw_chance + (max_draw_chance - min_draw_chance) * closeness
     return Chances(win=(1 - draw) * pure, draw=draw, lose=(1 - draw) * (1 - pure))
 
 
