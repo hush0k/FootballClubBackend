@@ -38,8 +38,8 @@ def get_win_chance(power_a: float, power_b: float, spread: float = 28) -> float:
 def get_chances(
         power: float,
         enemy_power: float,
-        min_draw_chance: float = 0.1,
-        max_draw_chance: float = 0.28,
+        min_draw_chance: float = 0.06,
+        max_draw_chance: float = 0.22,
 ) -> Chances:
     pure = get_win_chance(power, enemy_power)
     closeness = 1 - abs(pure - 0.5) * 2
