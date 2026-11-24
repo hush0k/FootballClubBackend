@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 60 * 24
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 365
 
     GOOGLE_CLIENT_ID: str = ""
 
